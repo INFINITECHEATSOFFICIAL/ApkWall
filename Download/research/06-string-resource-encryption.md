@@ -1,0 +1,40 @@
+# String and selected asset/resource encryption
+
+**Finding.** String/asset encryption is a runtime-assisted obfuscation, not a self-contained APK-file encryption switch. It can hide chosen plaintext in a delivered APK only when the app’s runtime paths are changed to reconstruct/use the data. For arbitrary prebuilt APKs with no source, an offline transformer can rewrite some DEX literals or explicitly identified raw assets, but cannot promise semantics-preserving coverage across apps. Android’s `AppComponentFactory` is a component/class-loader instantiation hook, not a universal resource- or asset-read interception point. Therefore this is **not a safe generic selectable protection for arbitrary APKs**; do not ship it as an apparently active toggle based on packaging-only encryption.
+
+## Scope and implementation boundary
+
+- **Source/build-time (preferred):** identify selected literals/assets in the app’s build pipeline; replace literals with calls to an injected decoder and route each encrypted asset through a compatible loader. Rebuild and test. OWASP describes string encryption as replacing literals with encoded/encrypted values and adding runtime reconstruction logic. This is naturally supported where code and usage are available.
+- **Post-build DEX transformation (limited):** a tool can parse/rewrite DEX `const-string` uses and add a decoder/helper, but it must preserve register/instruction constraints, multidex and runtime compatibility, and avoid strings that are identifiers, reflection/JNI/serialization names, annotations, format templates, or otherwise consumed by platform/library code. Automated “sensitive string” selection is heuristic and cannot guarantee semantic safety. Native-code literals are outside a DEX-only pass.
+- **Resources are not DEX literals:** Android compiles and links resource files into platform-oriented binary resources; resource IDs, configuration variants, XML references, aliases, and framework `Resources` access are part of normal behavior. Encrypting string entries or selected `res/` payloads in-place makes them unavailable to ordinary platform resource APIs unless code/resource access is redirected. Generic interception is not supplied by an `AppComponentFactory` wrapper.
+- **Raw assets:** an explicitly allow-listed asset can be encrypted in the ZIP and decrypted through a custom loader, but every consumer must be changed to use that loader. `AssetManager` exposes raw assets as streams and also supports uncompressed memory-mapped access (`openFd`); consumers that expect a file descriptor, direct path, native access, or an unencrypted stream can break. Unknown asset usage makes automatic selection unsafe.
+- **Signing/distribution:** any modified APK must be signed as an output artifact. A newly signed APK generally cannot update the original installation unless signed with the original app-signing identity; Android’s signing guidance says update certificates must match. An offline protector usually does not possess the developer’s private app-signing key. Re-signing is a material distribution limitation, not an implementation detail.
+
+## Minimum requirements for a real supported mode
+
+1. A reliable, explicit selection/allow-list and distinction between DEX literals, compiled resources, and raw assets—never “encrypt all strings/resources” by default.
+2. Runtime decryption/decoding code and a rewrite of **all** relevant use sites (or source/build integration); initialization must work before any use, including provider and startup paths.
+3. A correctly designed encrypted format, integrity/error handling, and key management. In an offline APK the decryption capability/key must ultimately be recoverable on the device; this raises reverse-engineering cost but cannot provide durable secrecy against an attacker controlling or inspecting the client/runtime.
+4. Binary parsers/rewriters for every affected DEX/resource/manifest form and API level, preservation of package semantics, and device/runtime regression testing. Repackage and re-sign; provide the signing key or clearly require the user to sign with their own.
+5. For assets, confirmation that app/library/native/framework code does not rely on direct, memory-mapped, or uninstrumented access to selected files.
+
+## Compatibility and false-positive risks
+
+- Resource variants (locale/density/night mode), aliases, XML layouts/themes, resource IDs and reflection-like/name-based lookups can be missed or corrupted by blanket resource conversion.
+- Rewriting literals can break reflection, JNI, intent/action names, deep links, serializers, WebView/JavaScript bridges, regular expressions, format strings, logging, and native-library interfaces. Heuristics for URLs, tokens, or “sensitive” words will both miss data and flag harmless strings.
+- Early app initialization, secondary processes, providers, multidex, native libraries, third-party SDKs, and direct asset descriptors create paths a wrapper may not observe. Tests on a single launch path are not sufficient.
+- Runtime plaintext necessarily exists when used and can be recovered by instrumentation/memory inspection. Treat this as obfuscation/deterrence, not protection for credentials or secrets embedded in an offline client.
+- Re-signing with a different certificate can prevent in-place upgrades and can break signature-based permissions, identity checks, or integrations.
+
+## Recommendation
+
+Do not expose “String/resource encryption” as a generally supported active protection toggle for this product’s arbitrary-APK/no-source mode. The existing `AppComponentFactory` wrapper does not make it safe. Offer it only as a **source/build-integrated** feature, or later as a clearly constrained, opt-in experimental DEX-literal/raw-asset transformation with a user-specified allow-list, compatibility validation, mandatory signing disclosure, and explicit coverage limits. Do not claim compiled Android string resources are generically encrypted when only selected ZIP entries or DEX literals were changed.
+
+## Sources
+
+1. **App resources overview | Android Developers** — <https://developer.android.com/guide/topics/resources/providing-resources>. Android resources are organized in resource directories, may have configuration-specific alternatives, are assigned generated resource IDs, and are accessed by ID; supports the distinction between build/resource-table content and ordinary DEX strings, plus why blanket transformations risk variants and references.
+2. **AAPT2 | Android Developers** — <https://developer.android.com/tools/aapt2>. AAPT2 compiles resource files into optimized binary formats and links/merges intermediate resources into an APK; supports the build-time nature and binary/resource-table complexity of Android resources.
+3. **MASTG-KNOW-0033: Obfuscation | OWASP MAS** — <https://mas.owasp.org/MASTG-KNOW-0033/>. Defines string encryption as replacing plaintext literals with encoded/encrypted representations and adding runtime logic to reconstruct them; also describes DEX decompilation and runtime code/data loading. Supports the runtime-assisted-obfuscation characterization.
+4. **AssetManager | Android Developers API reference** — <https://developer.android.com/reference/android/content/res/AssetManager>. Defines `AssetManager` as a lower-level API for raw bundled assets; documents `open()` as a stream and `openFd()` as memory-mapped access for uncompressed assets. Supports consumer-path and compatibility caveats.
+5. **AppComponentFactory | Android Developers API reference** — <https://developer.android.com/reference/android/app/AppComponentFactory>. Defines it as controlling instantiation of manifest elements; `instantiateClassLoader` chooses the class loader used to instantiate app components. Supports that this is not a general resource/asset interception API.
+6. **Sign your app | Android Developers** — <https://developer.android.com/studio/publish/app-signing>. Android’s update model compares signing certificates and allows update when certificates match; supports the signing-identity limitation after APK modification/re-signing.
